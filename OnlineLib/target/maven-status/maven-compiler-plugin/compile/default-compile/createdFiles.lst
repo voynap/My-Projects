@@ -1,0 +1,10 @@
+project\DAO\PersonMapper.class
+project\config\SpringConfig.class
+project\controllers\BooksController.class
+project\config\SpringMVCServletDispatcherInitializer.class
+project\models\Person.class
+project\controllers\PeopleController.class
+project\controllers\HelloWorldController.class
+project\models\Book.class
+project\DAO\BookDAO.class
+project\DAO\PersonDAO.class

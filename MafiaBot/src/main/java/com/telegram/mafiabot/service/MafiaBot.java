@@ -5,7 +5,6 @@ import com.telegram.mafiabot.util.TelegramSticker;
 import com.telegram.mafiabot.util.TelegramStickersFields;
 import com.telegram.mafiabot.config.BotConfig;
 import com.telegram.mafiabot.model.Player;
-import com.telegram.mafiabot.repository.PlayersRepository;
 import com.vdurmont.emoji.EmojiParser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,7 +34,8 @@ public class MafiaBot extends TelegramLongPollingBot {
 
     List<Player> signedPlayers = new ArrayList<>();
     private final Map<String, Game> gamesMap = new HashMap<>();
-    private final PlayersRepository playersRepository;
+    private final PlayersService playersService;
+
     final BotConfig config;
     static final String HELP_TEXT = "Смотри, что могу : \n" +
             "/join - присоединиться к игре\n" +
@@ -43,9 +43,9 @@ public class MafiaBot extends TelegramLongPollingBot {
             "Test line 3";
 
     @Autowired
-    public MafiaBot(BotConfig config, PlayersRepository playersRepository) {
+    public MafiaBot(BotConfig config, PlayersService playersService) {
         this.config = config;
-        this.playersRepository = playersRepository;
+        this.playersService = playersService;
     }
 
 
@@ -71,7 +71,7 @@ public class MafiaBot extends TelegramLongPollingBot {
             // Присоединение игрока
             if(gamesMap.containsKey(update.getMessage().getText())) {
                 Game game = gamesMap.get(update.getMessage().getText()); // Проверяем что игра не началась
-                if (!game.isReady) {
+                if (!game.isNumbersAssigned) {
                     playerJoined(update, chatId);
                 } else {
                     sendMessage(chatId, "Ой, кажется игра уже началась.");
@@ -96,6 +96,7 @@ public class MafiaBot extends TelegramLongPollingBot {
                 case "/start_game"      -> startGame(chatId);
                 case "/players"         -> getGamePlayers(chatId);
                 case "/numbers"          -> getPlayersAndNumbers(chatId);
+                case "/next"            -> nextPhase(chatId);
             }
 
         } else if (update.hasCallbackQuery()) {
@@ -139,9 +140,49 @@ public class MafiaBot extends TelegramLongPollingBot {
                 case "CONTINUE_BUTTON"  -> continueButtonProcess(chatId);
                 case "BEGIN_BUTTON"     -> beginButtonProcess(chatId);
                 case "CONFIRM_ROLE_BUTTON" -> confirmButtonProcess(chatId);
+                case "PASS_BUTTON" -> passProcess(chatId);
+                case "NIGHT_BUTTON" -> nightProcess(chatId);
+                case "GAME_BUTTON" -> startGameButton(chatId);
             }
 
 
+        }
+    }
+
+    private void startGameButton(long chatId) {
+        Game game = findGameByMasterChatId(chatId);
+        game.beginGame();
+    }
+
+    private void nightProcess(long chatId) {
+        Game game = findGameByMasterChatId(chatId);
+        game.setNightFlag(true);
+        game.setPhase(5);
+    }
+
+    private void passProcess(long chatId) {
+        Game game = findGameByMasterChatId(chatId);
+        game.setPassFlag(true);
+    }
+
+    private void nextPhase(long chatId) {
+        Player player = playersService.findById(chatId).get();
+        if (player.isMaster()) {
+            Game game = findGameByMasterChatId(chatId);
+            if (!game.isNightFlag()) {
+                game.setPhase(game.getPhase() + 1);
+                if (game.getPhase() > 5) {
+                    game.setPhase(0);
+                }
+            } else {
+                game.setNightPhase(game.getNightPhase() + 1);
+                if (game.getNightPhase() > 4) {
+                    // TODO
+                    game.setNightFlag(false);
+                    game.setNightPhase(0);
+
+                }
+            }
         }
     }
 
@@ -195,36 +236,54 @@ public class MafiaBot extends TelegramLongPollingBot {
 
     private void beginButtonProcess(long chatId) {
         Game game = findGameByMasterChatId(chatId);
-        game.setReady(true);
-        sendMessage(chatId, "Игра началась, господин ведущий!");
-        game.sendMessageToAll("Игра началась!");
-        game.start();
+        Thread thread = new Thread() {
+            @Override
+            public void run() {
+                sendMessage(game.getGameMasterChatId(), "Запускаю таймер в 60 секунд.");
+                try {
+                    Thread.sleep(6000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                sendMessage(game.getGameMasterChatId(), "Минута общего обсуждения завершена. Индивидуальное время.");
+                sendMessage(game.getGameMasterChatId(), "Каждому игроку будет выделено 30 секунд. Используйте команду /next чтобы начать индивидуальное время");
+                sendMessage(game.getGameMasterChatId(), "К сожалению я пока не умею делать тайм-ауты, поэтому дождитесь " +
+                        "окончания индивидуального времени игроков, если кто-нибудь попросит тайм-аут");
+            }
+        };
+        thread.start();
+
+
     }
 
     private void continueButtonProcess(long chatId) {
         Game game = findGameByMasterChatId(chatId);
-        game.setReady(true);
-        for (Player player : game.getPlayers()) {
-            if (!player.getName().equals("Guest")) {
-                SendMessage message = new SendMessage();
-                rolesButtonInit(message, player.getChatId(), "Пожалуйста, сообщите свою роль в игре", player);
-                    try {
-                         execute(message);
-                    } catch (TelegramApiException e) {
-                        throw new RuntimeException(e);
+        game.setNumbersAssigned(true);
+        if (!game.isRolesAssigned) {
+            for (Player player : game.getPlayers()) {
+                if (!player.getName().equals("Guest")) {
+                    SendMessage message = new SendMessage();
+                    rolesButtonInit(message, player.getChatId(), "Пожалуйста, сообщите свою роль в игре", player);
+                        try {
+                             execute(message);
+                        } catch (TelegramApiException e) {
+                            throw new RuntimeException(e);
+                    }
                 }
             }
+        } else {
+
         }
     }
 
     private void cancelButtonProcess(long chatId) {
-        Player player = playersRepository.findById(chatId).get();
+        Player player = playersService.findById(chatId).get();
         signedPlayers.remove(player);
         sendMessage(chatId, "Вы отменили запись на игру :c ");
     }
 
     private void signUpButtonProcess(long chatId, long messageId) {
-        Player player = playersRepository.findById(chatId).get();
+        Player player = playersService.findById(chatId).get();
         if (!signedPlayers.contains(player)) {
             signedPlayers.add(player);
             getSignUpMessage();
@@ -259,28 +318,46 @@ public class MafiaBot extends TelegramLongPollingBot {
     private void getGamePlayers(long chatId) {
 
         Game game = findGameByMasterChatId(chatId);
-        sendMessage(chatId, game.generatePlayerAndNumbersMessage(game.isRolesSet));
+        Player player = playersService.findById(chatId).get();
+        if (player.isMaster() && game.getGameMasterChatId() == chatId) {
+            sendMessage(chatId, game.generatePlayerAndNumbersMessage(game.isRolesAssigned));
+        } else {
+            sendMessage(chatId, game.generatePlayerAndNumbersMessage(false));
+        }
 
     }
 
 
     private void startGame(long chatId) {
-        Player master = playersRepository.findById(chatId).get();
-        if (master.isMaster()) {
-            Game game = findGameByMasterChatId(chatId);
-            sendMessage(chatId, "Ждем пока присоединится минимум 8 игроков");
-            Thread thread = new Thread() {
-                @Override
-                public void run() {
-                    checkForPlayers(game);
-                    sendMessage(chatId, "Минимальное количество игроков присоединилось, ждем пока все отправят мне свои номера.");
-                    game.prepare();
+        try {
+            Player master = playersService.findById(chatId).get();
+            if (master.isMaster()) {
+                Game game = findGameByMasterChatId(chatId);
+                if (game == null) {
+                    sendMessage(chatId, "Игру необходимо сперва создать. \nИспользуйте команду /master");
+                    return;
+                }
+                sendMessage(chatId, "Ждем пока присоединится минимум 8 игроков");
+                Thread thread = new Thread() {
+                    @Override
+                    public void run() {
+                        Game g = findGameByMasterChatId(chatId);
+                        if (g.isReady) {
+                            sendMessage(game.getGameMasterChatId(), "Похоже игра уже началась, и находится в самом разгаре");
+                            return;
+                        }
+                        checkForPlayers(game);
+                        sendMessage(chatId, "Минимальное количество игроков присоединилось, ждем пока все отправят мне свои номера.");
+                        game.prepare();
                     }
                 };
                 thread.start();
 
-        } else {
-            sendMessage(chatId, "Извините, только ведущий может начинать игры");
+            } else {
+                sendMessage(chatId, "Извините, только ведущий может начинать игры");
+            }
+        } catch (NullPointerException e) {
+            sendMessage(chatId, "Игру необходимо сперва создать. Используйте команду /master");
         }
     }
 
@@ -292,52 +369,40 @@ public class MafiaBot extends TelegramLongPollingBot {
     }
 
     private void createSession(Update update, long chatId) {
-        String key = "t";
-        sendMessageWithHtml(chatId, "Ваш ключ-идентификатор для игры : " + "<b>" + key + "</b>"  + "\n" +
-                "Сообщите его другим игрокам, чтобы они смогли присоединиться к игре");
+        Player player = playersService.findById(chatId).get();
+        if (player.isMaster()) {
+            String key = generateKey();
+            sendMessageWithHtml(chatId, "Ваш ключ-идентификатор для игры : " + "<b>" + key + "</b>"  + "\n" +
+                    "Сообщите его другим игрокам, чтобы они смогли присоединиться к игре");
 
-        Game game = new Game(this, key,chatId);
-        gamesMap.put(key,game);
-        if(game.getPlayers().size() == 15) {
-            startGame(chatId);
+            Game game = new Game(this, key,chatId);
+            gamesMap.put(key,game);
+            if(game.getPlayers().size() == 15) {
+                startGame(chatId);
+            }
+        } else {
+            sendMessage(chatId, "Только ведущие могут создавать игры");
         }
     }
 
-//    private void digitsProcess(long chatId, String messageText) {
-//
-//        Player player = playersRepository.findById(chatId).get();
-//        Game game = gamesMap.get(player.getGameKey());
-//        if (!game.isReady()) {
-//            if (!game.getPlayerMap().containsValue(player)) {
-//                game.playerMap.put(Integer.parseInt(messageText), player);
-//                sendMessage(chatId, "Вам установлен номер " + messageText);
-//                sendMessage(game.getGameMasterChatId(), "Игроку " + player.getUsername() + " был установлен номер " + messageText);
-//            } else {
-//                Player switchPlayer = game.playerMap.get(Integer.parseInt(messageText));
-//                int switchKey = 0;
-//                for (HashMap.Entry<Integer, Player> entry : game.playerMap.entrySet()) {
-//                        if (entry.getValue().equals(switchPlayer)) {
-//                            switchKey = entry.getKey();
-//                            break;
-//                        }
-//                }
-//                game.getPlayerMap().put(switchKey, switchPlayer);
-//                game.getPlayerMap().put(Integer.parseInt(messageText), player);
-//            }
-//        }
-//    }
 
     private void digitsProcess(long chatId, String messageText) {
-        Player player = playersRepository.findById(chatId).get();
+        Player player = playersService.findById(chatId).get();
         Game game = gamesMap.get(player.getGameKey());
-        if (!game.isReady()) {
+        if (!game.isNumbersAssigned()) {
             if (!game.getPlayerMap().containsValue(player)) {
+                player.setPlayNumber(Integer.parseInt(messageText));
                 game.playerMap.put(Integer.parseInt(messageText), player);
                 sendMessage(chatId, "Вам установлен номер " + messageText);
                 sendMessage(game.getGameMasterChatId(), "Игроку " + player.getUsername() + " был установлен номер " + messageText);
             } else {
                 int targetKey = Integer.parseInt(messageText);
                 Player switchPlayer = game.playerMap.get(targetKey);
+                switchPlayer.setPlayNumber(player.getPlayNumber());
+                if (switchPlayer.getPlayNumber() == 0) {
+                    switchPlayer.setPlayNumber(1);
+                }
+                player.setPlayNumber(Integer.parseInt(messageText));
                 int currentPlayerKey = 0;
                 for (HashMap.Entry<Integer, Player> entry : game.playerMap.entrySet()) {
                     if (entry.getValue().equals(player)) {
@@ -348,6 +413,67 @@ public class MafiaBot extends TelegramLongPollingBot {
                 game.getPlayerMap().put(currentPlayerKey, switchPlayer);
                 game.getPlayerMap().put(targetKey, player);
                 sendMessage(chatId, "Вы изменили свой номер на " + messageText);
+            }
+        } else if (game.isNightFlag()) {
+            if (player.isMaster() && player.getChatId() == game.getGameMasterChatId()) {
+                if (game.getNightPhase() == 0) {
+                    //МАФИЯ
+                    if (messageText.equals("0")) {
+                        sendMessage(game.getGameMasterChatId(),"Мафия стреляет мимо!");
+                        return;
+                    }
+                    game.mafiaTurn(Integer.parseInt(messageText));
+                    sendMessage(game.getGameMasterChatId(), "Мафия стреляет в игрока номер " + messageText);
+
+                } else if (game.getNightPhase() == 1) {
+                    //ДОН
+                    game.donTurn(Integer.parseInt(messageText), chatId);
+
+
+                } else if (game.getNightPhase() == 2) {
+                    //МАНЬЯК
+                    if (messageText.equals("0")) {
+                        sendMessage(game.getGameMasterChatId(),"Маньяк остается дома этой ночью!");
+                        return;
+                    }
+                    game.maniacTurn(Integer.parseInt(messageText));
+                    sendMessage(game.getGameMasterChatId(), "Маньяк выбирает жертву - игрок номер " + messageText);
+
+                } else if (game.getNightPhase() == 3) {
+                    //ШЕРИФ
+                    game.chefTurn(Integer.parseInt(messageText), chatId);
+
+
+                } else if (game.getNightPhase() == 4) {
+                    //ДОКТОР
+                    game.doctorTurn(Integer.parseInt(messageText), chatId);
+
+
+                }
+            }
+        } else if (game.getPhase() == 1) {
+            Optional<Player> foundPlayer = game.playerMap.values()
+                    .stream()
+                    .filter(p -> p.getChatId() == chatId)
+                    .findFirst();
+            if (game.getIndividualTimePlayerNumber() == foundPlayer.get().getPlayNumber()) {
+                game.addToVoteList(Integer.parseInt(messageText), chatId);
+                sendMessage(chatId, "Вы выставили игрока номер " + messageText);
+                sendMessage(game.getGameMasterChatId(), "Игрок " + foundPlayer.get().getName() + " выставляет игрока номер " + messageText);
+
+            }
+        } else if (game.getPhase() == 2) {
+            if (chatId == game.getGameMasterChatId()) {
+                game.addToVoteList(Integer.parseInt(messageText));
+            }
+        } else if (game.getPhase() == 3) {
+            if (game.getGameMasterChatId() == chatId) {
+                Player votedPlayer = game.getPlayerMap().get(Integer.parseInt(messageText));
+                sendMessage(votedPlayer.getChatId(), "Вас посчитали мафией, вы покидаете игру. \n" +
+                        "Спасибо за участие!");
+                votedPlayer.setAlive(false);
+                sendMessage(game.getGameMasterChatId(), "Игрок номер " + messageText + " покидает игру");
+                game.getPlayerMap().remove(votedPlayer.getPlayNumber());
             }
         }
     }
@@ -365,6 +491,7 @@ public class MafiaBot extends TelegramLongPollingBot {
         } catch (TelegramApiException e) {
 
         }
+
     }
 
     private void cancel(long chatId) {
@@ -378,7 +505,7 @@ public class MafiaBot extends TelegramLongPollingBot {
     }
 
     private void deleteGuest(long chatId) {
-        Player player = playersRepository.findById(chatId).get();
+        Player player = playersService.findById(chatId).get();
         if (player.isMaster()) {
             Game game = findGameByMasterChatId(chatId);
             List<Player> players = game.getPlayers();
@@ -403,11 +530,11 @@ public class MafiaBot extends TelegramLongPollingBot {
         Game game = gamesMap.get(update.getMessage().getText());
         long masterChatId = game.getGameMasterChatId();
         sendMessage(masterChatId, "Игрок " + update.getMessage().getChat().getUserName() + " присоединился");
-        Player player = playersRepository.findByUsername(update.getMessage().getChat().getUserName()).get(0);
+        Player player = playersService.findByUsername(update.getMessage().getChat().getUserName()).get(0);
         player.setGameKey(update.getMessage().getText());
         game.getPlayers().add(player);
-        playersRepository.save(player);
-        sendMessage(chatId, "Вы присоединились к игре ведущего " + playersRepository.findById(masterChatId).get().getName());
+        playersService.save(player);
+        sendMessage(chatId, "Вы присоединились к игре ведущего " + playersService.findById(masterChatId).get().getName());
         sleep(1000);
         sendMessage(chatId, "Хорошей игры!");
         sleep(1000);
@@ -423,8 +550,8 @@ public class MafiaBot extends TelegramLongPollingBot {
     }
 
     private void addGuest(long chatId) {
-        if (playersRepository.findById(chatId).isPresent()) {
-            Player player = playersRepository.findById(chatId).get();
+        if (playersService.findById(chatId).isPresent()) {
+            Player player = playersService.findById(chatId).get();
             if (player.isMaster()) {
                 SendMessage message = new SendMessage();
                 message.setChatId(chatId);
@@ -454,10 +581,10 @@ public class MafiaBot extends TelegramLongPollingBot {
         Random random = new Random();
         List<TelegramSticker> stickers = TelegramStickersFields.getHelloStickers();
         sendSticker(chatId, stickers.get(random.nextInt(stickers.size())).getId());
-        if(playersRepository.findById(message.getChatId()).isEmpty()) {
+        if(playersService.findById(message.getChatId()).isEmpty()) {
             sayHello(chatId, message);
         } else {
-            Player player = playersRepository.findById(chatId).get();
+            Player player = playersService.findById(chatId).get();
             if (player.isMaster()) {
                 sendMessage(chatId, "Кто ты сегодня? /gamer или /master ?");
                 InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
@@ -559,7 +686,7 @@ public class MafiaBot extends TelegramLongPollingBot {
         player.setName(chat.getFirstName());
         player.setUsername(chat.getUserName());
         player.setScore(0);
-        playersRepository.save(player);
+        playersService.save(player);
         sleep(2000);
         sendMessage(chatId, "Готово! Можем приступать к игре");
         sleep(1500);

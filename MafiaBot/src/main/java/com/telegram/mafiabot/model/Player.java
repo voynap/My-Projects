@@ -5,6 +5,7 @@ import com.telegram.mafiabot.service.Game;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Transient;
 import lombok.Data;
 
 @Entity(name = "playersData")
@@ -14,6 +15,7 @@ public class Player {
     private long chatId;
     private String name;
 
+    @Transient
     private Role role;
 
     private int score;
@@ -21,6 +23,12 @@ public class Player {
     private String username;
 
     private String gameKey;
+    @Transient
+    private boolean isAlive = true;
+    @Transient
+    private int playNumber;
+
+
 
     private boolean isMaster = false;
 
@@ -31,6 +39,30 @@ public class Player {
     public Player(int chatId, String name) {
         this.chatId = chatId;
         this.name = name;
+    }
+
+    public int getPlayNumber() {
+        return playNumber;
+    }
+
+    public void setPlayNumber(int playNumber) {
+        this.playNumber = playNumber;
+    }
+
+    public int getScore() {
+        return score;
+    }
+
+    public void setScore(int score) {
+        this.score = score;
+    }
+
+    public boolean isAlive() {
+        return isAlive;
+    }
+
+    public void setAlive(boolean alive) {
+        isAlive = alive;
     }
 
     public long getChatId() {

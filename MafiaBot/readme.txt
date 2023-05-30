@@ -17,4 +17,3 @@ Customizable game settings: Game masters can adjust game settings, such as the n
 Game management: The bot provides game masters with tools to monitor and manage the game, such as checking players' roles, starting and stopping the game, and more.
 
 
-Current project in active developement.
